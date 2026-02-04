@@ -16,8 +16,8 @@ class AppGerenciador:
         self.nome_var = tk.StringVar()
         self.cpf_var = tk.StringVar()
         # Variáveis para o filtro de data
-        self.data_inicio_var = tk.StringVar(value="01/01/2024")
-        self.data_fim_var = tk.StringVar(value="31/01/2024")
+        self.data_inicio_var = tk.StringVar(value="01/01/2026")
+        self.data_fim_var = tk.StringVar(value="31/01/2026")
         
         self.editando_cpf_original = None 
 
@@ -135,7 +135,8 @@ class AppGerenciador:
 
     # --- LÓGICA DE PROCESSAMENTO COM FILTRO ---
     def processar_arquivo_relogio(self):
-        # Validar Datas do Filtro
+        import re  # Certifique-se de que o re está importado
+        
         try:
             f_inicio = datetime.strptime(self.data_inicio_var.get(), "%d/%m/%Y")
             f_fim = datetime.strptime(self.data_fim_var.get(), "%d/%m/%Y")
@@ -149,39 +150,45 @@ class AppGerenciador:
         mapa_nomes = {c.zfill(11): n for l in self.ler_arquivo() if ";" in l for n, c in [l.strip().split(";")]}
         batidas = defaultdict(lambda: defaultdict(list))
         
+        # Expressão Regular para Registro Tipo 3
+        # Grupo 1: Data/Hora variável (YYYY-MM-DDThh:mm:ss[+-]ZZZZ)
+        # Grupo 2: CPF exatamente com 12 dígitos
+        padrao_tipo3 = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{1,2}:\d{1,2}:\d{1,2}[+-]\d{4})(\d{12})")
+
         try:
             with open(caminho_afd, "r", encoding="utf-8", errors="ignore") as f:
                 for linha in f:
-                    if len(linha) > 40 and linha[9] == "3":
-                        # Extração da Data ISO (YYYY-MM-DD)
-                        data_iso_str = linha[10:20]
-                        try:
-                            data_dt = datetime.strptime(data_iso_str, "%Y-%m-%d")
-                        except: continue
+                    linha = linha.strip()
+                    if len(linha) > 10 and linha[9] == "3":
+                        match = padrao_tipo3.search(linha)
+                        if match:
+                            dh_completo = match.group(1)
+                            cpf_12 = match.group(2)
+                            
+                            # Extração da Data para o Filtro
+                            data_iso = dh_completo[:10]
+                            try:
+                                data_dt = datetime.strptime(data_iso, "%Y-%m-%d")
+                            except: continue
 
-                        # APLICAÇÃO DO FILTRO
-                        if f_inicio <= data_dt <= f_fim:
-                            data_br = data_dt.strftime("%d/%m/%Y")
-                            
-                            # Localiza o fuso para isolar a hora
-                            idx_fuso = linha.find("-", 21)
-                            if idx_fuso == -1: idx_fuso = linha.find("+", 21)
-                            
-                            if idx_fuso != -1:
-                                hora_bruta = linha[21:idx_fuso]
-                                # Corrige hh:mm:ss (Ex: 19:3:0 -> 19:03:00)
-                                hora_fmt = ":".join([p.zfill(2) for p in hora_bruta.split(":")])
+                            if f_inicio <= data_dt <= f_fim:
+                                data_br = data_dt.strftime("%d/%m/%Y")
                                 
-                                # Extração do CPF (pula o fuso de 5 caracteres)
-                                pos_cpf = idx_fuso + 5
-                                trecho_cpf = linha[pos_cpf:pos_cpf+15]
-                                cpf_limpo = "".join(filter(str.isdigit, trecho_cpf))[:11].zfill(11)
-                                
-                                if len(cpf_limpo) == 11:
+                                # Extração e formatação da Hora (Garante hh:mm:ss)
+                                # Pega o trecho entre o 'T' e o fuso (+ ou -)
+                                time_match = re.search(r"T(.*?)(?=[+-])", dh_completo)
+                                if time_match:
+                                    hora_bruta = time_match.group(1)
+                                    hora_fmt = ":".join([p.zfill(2) for p in hora_bruta.split(":")])
+                                    
+                                    # O CPF no AFD tem 12 dígitos (geralmente PIS ou 0+CPF)
+                                    # Extraímos os últimos 11 dígitos para bater com o cadastro
+                                    cpf_limpo = cpf_12[-11:]
+                                    
                                     batidas[cpf_limpo][data_br].append(hora_fmt)
                             
         except Exception as e:
-            messagebox.showerror("Erro", f"Erro: {e}"); return
+            messagebox.showerror("Erro", f"Erro ao processar: {e}"); return
 
         if not batidas:
             messagebox.showwarning("Aviso", "Nenhum registro encontrado para este período.")
@@ -199,7 +206,7 @@ class AppGerenciador:
                 for data, horarios in datas.items():
                     horarios.sort()
                     ent = f"{data} {horarios[0]}"
-                    sai = f"{data} {horarios[-1]}" if len(horarios) > 1 else "SEM SAÍDA"
+                    sai = f"{data} {horarios[-1]}" if len(horarios) > 1 else ""
                     writer.writerow([nome, cpf, ent, sai])
 
         messagebox.showinfo("Sucesso", f"Relatório de {self.data_inicio_var.get()} a {self.data_fim_var.get()} gerado!")
